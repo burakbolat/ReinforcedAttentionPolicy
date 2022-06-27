@@ -6,8 +6,7 @@ from torchvision.io import read_image
 class MiniImageNetDataset(Dataset):
     """Create Dataset.
     Dataset size is small. Thus, directly loaded to the memory.
-    Unlike, most of the time, the data path is loaded first. 
-    Then, image is opened at the runtime.
+    Unlike, most of the time, the data path is loaded first, then, image is opened at the runtime.
     Images from: https://lyy.mpi-inf.mpg.de/mtl/download/
     """
     def __init__(self, img_dir=None, transform=None, read_all=True):
