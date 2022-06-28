@@ -19,8 +19,8 @@ class Trainer:
         backbone_dir = config["backbone_dir"]
         self.device = config["device"]
 
-        if use_pretrained: self.backbone = model.resnet18(True, load_path=backbone_dir)
-        else: self.backbone = model.resnet18(False)
+        if use_pretrained: self.backbone = model.resnet18(True, load_path=backbone_dir, num_classes = self.num_classes)
+        else: self.backbone = model.resnet18(False, num_classes = self.num_classes)
         self.backbone = self.backbone.to(self.device)
 
         self.train_set = torchvision.datasets.CIFAR10("CIFAR10", True, transform=transform, download=True)
@@ -33,18 +33,21 @@ class Trainer:
             for param in model.parameters():
                 param.requires_grad = False
 
-    def finetune_backbone(self, backbone, feature_extracting=True):
+    def finetune_backbone(self, backbone, feature_extracting=True, first_loop=False):
         # Followed https://pytorch.org/tutorials/beginner/finetuning_torchvision_models_tutorial.html
-        self.set_parameter_requires_grad(backbone, feature_extracting=feature_extracting)
-        num_ftrs = backbone.fc.in_features
-        backbone.fc = nn.Linear(num_ftrs, self.num_classes)
-        backbone.fc = backbone.fc.to(self.device)
-        print("Changed last layer.")
-        for name,param in backbone.named_parameters():
-            if param.requires_grad == True:
-                print("\t",name)
+        
+        if first_loop:
+            self.set_parameter_requires_grad(backbone, feature_extracting=feature_extracting)
+            num_ftrs = backbone.fc.in_features
+            backbone.fc = nn.Linear(num_ftrs, self.num_classes)
+            backbone.fc = backbone.fc.to(self.device)
+            print("Changed last layer.")
+            for name,param in backbone.named_parameters():
+                if param.requires_grad == True:
+                    print("\t",name)
 
-        optim = torch.optim.SGD(backbone.parameters(), lr=0.001, momentum=0.9)
+        optim = torch.optim.SGD(backbone.parameters(), lr=0.01, momentum=0.9, weight_decay=0.01, nesterov=True)
+        # optim = torch.optim.Adam(backbone.parameters(), lr=0.001)
         criterion = nn.CrossEntropyLoss()
         print("Starting training")
         for epoch in range(self.finetune_epoch):
@@ -86,16 +89,19 @@ if __name__=="__main__":
         "transform" : transform,
         "num_classes" : 10,
         "batch_size" : 128,
-        "finetune_epoch" : 10,
+        "finetune_epoch" : 100,
         "use_pretrained" : True,
-        "backbone_dir" : "resnet18-f37072fd.pth",
+        "backbone_dir" : "models/finetuned_resnet18_5_0.pt",
         "device" : "cuda"
     }
 
     trainer = Trainer(config=config)
 
     performance = trainer.eval(trainer.test_loader, trainer.backbone)
+    print(performance)
+    first_loop = True
     while performance < 92.6:
         print(performance)
-        trainer.finetune_backbone(trainer.backbone, True)
+        trainer.finetune_backbone(trainer.backbone, False, first_loop=first_loop)
         performance = trainer.eval(trainer.test_loader, trainer.backbone)
+        first_loop = False
