@@ -307,7 +307,12 @@ class RLAgent(nn.Module):
 
     def __init__(self, 
                 image_res: int = 256,
-                channels: List[int] = [256, 128, 128]):
+                channels: List[int] = [256, 128, 128],
+                embed_feature_res: int = 512,
+                u_size: int = 512,
+                attention_res: int = 512,
+                attention_channels: int = 4,
+                lin_block_depth: int = 3):
         super().__init__()
 
         layers = []
@@ -326,12 +331,46 @@ class RLAgent(nn.Module):
 
         self.conv_block = nn.Sequential(*layers)
 
+        # Create Linear Block (see Fig. 3)
+        # Sigmoid is accounted at forward pass
+        lin_input = channels[-1]*(self.conv_out_size*self.conv_out_size) + embed_feature_res
+        layers = []
+        for i in range(lin_block_depth):
+            if i == lin_block_depth-1: 
+                layers.append(nn.Sequential(nn.Linear(lin_input, u_size),
+                                        nn.ReLU()))
+            else:
+                layers.append(nn.Sequential(nn.Linear(lin_input, lin_input),
+                                        nn.ReLU()))
+        self.lin_block = nn.Sequential(*layers)
+
+        # Create policy to draw attention weights
+        self.attn_res = attention_res
+        self.attn_chn = attention_channels
+        self.policy = nn.Sequential(nn.Linear(u_size, attention_res*attention_res),
+                                    nn.Softmax(dim=-1))
+
     def forward(self, 
                 image: Tensor,
                 feature_vec: Tensor = None):
-        i_image = self.conv_block(image)    
-
+        """ One step of RL agent.
+        Args:
+            image: To extract low level informations
+            feature_vec (batch, backbone.fc.in_features): High level informations from pretrained backbone
+        Returns:
+            action: Attention maps
+        """
+        
+        i_image = self.conv_block(image)  # Compute image feature vector
+        i_image = i_image.view((i_image.size(0), -1))  # Flatten the feature vector
+        pre_linblock = torch.hstack((i_image, feature_vec))
+        g = torch.sigmoid(self.lin_block(pre_linblock))  # Compute policy function
+        attention = self.policy(g)  # Attention of shape B x hw
+        attention = attention.view((attention.size(0), self.attn_res, self.attn_res, 1))  # B x h x w x 1
+        attention = attention.repeat(1, 1, 1, self.attn_chn)  # Repeat attention for all channels
 
 if __name__=="__main__":
-    agent = RLAgent(image_res=128)
+    agent = RLAgent(image_res=128, attention_res=8, attention_channels=2)
     image = torch.rand((2, 3, 128, 128))
+    feature_prev = torch.rand((2, 512))
+    agent(image, feature_prev)
