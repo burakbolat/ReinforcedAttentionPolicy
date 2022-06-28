@@ -6,7 +6,7 @@ from typing import Type, Any, Callable, Union, List, Optional
 
 import torch
 import torch.nn as nn
-from torch import Tensor
+from torch import Tensor, normal
 
 from torch.hub import load_state_dict_from_url
 
@@ -71,20 +71,17 @@ class BasicBlock(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         identity = x
-
         out = self.conv1(x)
         out = self.bn1(out)
         out = self.relu(out)
 
         out = self.conv2(out)
         out = self.bn2(out)
-
         if self.downsample is not None:
             identity = self.downsample(x)
 
         out += identity
         out = self.relu(out)
-
         return out
 
 
@@ -157,6 +154,7 @@ class ResNet(nn.Module):
         width_per_group: int = 64,
         replace_stride_with_dilation: Optional[List[bool]] = None,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
+        attention_layer: int = -1,
     ) -> None:
         super().__init__()
         if norm_layer is None:
@@ -165,6 +163,7 @@ class ResNet(nn.Module):
 
         self.inplanes = 64
         self.dilation = 1
+        self.attention_layer = attention_layer
         if replace_stride_with_dilation is None:
             # each element in the tuple indicates if we should replace
             # the 2x2 stride with a dilated convolution instead
@@ -184,10 +183,15 @@ class ResNet(nn.Module):
         self.bn1 = norm_layer(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.layers = []
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2, dilate=replace_stride_with_dilation[0])
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2, dilate=replace_stride_with_dilation[1])
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2, dilate=replace_stride_with_dilation[2])
+        self.layers.append(self.layer1)
+        self.layers.append(self.layer2)
+        self.layers.append(self.layer3)
+        self.layers.append(self.layer4)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512 * block.expansion, num_classes)
 
@@ -249,26 +253,33 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def _forward_impl(self, x: Tensor) -> Tensor:
+    def _forward_impl(self, x: Tensor, attention_map: Tensor=None, out_layer: int=-1) -> Tensor:
         # See note [TorchScript super()]
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
-
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
+        
+        # x = self.layer1(x)
+        # x = self.layer2(x)
+        # x = self.layer3(x)
+        # x = self.layer4(x)
+        for layer_ind in range(len(self.layers)):
+            x = self.layers[layer_ind](x)
+            if self.attention_layer >= 0 and layer_ind == self.attention_layer:
+                x = attention_map * x
+            if out_layer != -1 and out_layer-1==layer_ind:  # out_layer-1 as indexing starts from 0, unlike layers: layer1 ...
+                return x
 
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
+        self.embedded_feature = x
         x = self.fc(x)
 
         return x
 
-    def forward(self, x: Tensor) -> Tensor:
-        return self._forward_impl(x)
+    def forward(self, x: Tensor, attention_map: Tensor=None, out_layer: int=-1) -> Tensor:
+        return self._forward_impl(x, attention_map, out_layer)
 
 
 def _resnet(
@@ -278,9 +289,10 @@ def _resnet(
     pretrained: bool,
     progress: bool,
     load_path: str,
+    attention_layer: int,
     **kwargs: Any,
 ) -> ResNet:
-    model = ResNet(block, layers, **kwargs)
+    model = ResNet(block, layers, attention_layer=attention_layer, **kwargs)
     if pretrained and not load_path:
         state_dict = load_state_dict_from_url(model_urls[arch], progress=progress)
         model.load_state_dict(state_dict)
@@ -298,7 +310,7 @@ def resnet18(pretrained: bool = False, progress: bool = True, load_path: str = "
         pretrained (bool): If True, returns a model pre-trained on ImageNet
         progress (bool): If True, displays a progress bar of the download to stderr
     """
-    return _resnet("resnet18", BasicBlock, [2, 2, 2, 2], pretrained, progress, load_path, **kwargs)
+    return _resnet("resnet18", BasicBlock, [2, 2, 2, 2], pretrained, progress, load_path, attention_layer=-1, **kwargs)
 
 
 class RLAgent(nn.Module):
@@ -307,11 +319,11 @@ class RLAgent(nn.Module):
 
     def __init__(self, 
                 image_res: int = 256,
-                channels: List[int] = [256, 128, 128],
+                channels: List[int] = [128, 128],
                 embed_feature_res: int = 512,
-                u_size: int = 512,
                 attention_res: int = 512,
                 attention_channels: int = 4,
+                u_size: int = 512,
                 lin_block_depth: int = 3):
         super().__init__()
 
@@ -322,11 +334,11 @@ class RLAgent(nn.Module):
             # layer definition is taken from section 4.2
             layer = nn.Sequential(nn.Conv2d(in_channels, channels[i], kernel_size=3),
                                 nn.BatchNorm2d(channels[i]),
-                                nn.ReLU(),
+                                nn.ReLU(inplace=True),
                                 nn.MaxPool2d(kernel_size = 3))
             layers.append(layer)
-            self.conv_out_size = int((self.conv_out_size - 2)) # pad = 0, kernel = 3, stride = 1, dilation = 1
-            self.conv_out_size = int((self.conv_out_size - 3)/3 + 1) # Max pooling output
+            self.conv_out_size = int((self.conv_out_size - 2))  # pad = 0, kernel = 3, stride = 1, dilation = 1
+            self.conv_out_size = int((self.conv_out_size - 3)/3 + 1)  # Max pooling output
             in_channels = channels[i]
 
         self.conv_block = nn.Sequential(*layers)
@@ -337,7 +349,7 @@ class RLAgent(nn.Module):
         layers = []
         for i in range(lin_block_depth):
             if i == lin_block_depth-1: 
-                layers.append(nn.Sequential(nn.Linear(lin_input, u_size),
+                layers.append(nn.Sequential(nn.Linear(lin_input, attention_res*attention_res),
                                         nn.ReLU()))
             else:
                 layers.append(nn.Sequential(nn.Linear(lin_input, lin_input),
@@ -347,7 +359,7 @@ class RLAgent(nn.Module):
         # Create policy to draw attention weights
         self.attn_res = attention_res
         self.attn_chn = attention_channels
-        self.policy = nn.Sequential(nn.Linear(u_size, attention_res*attention_res),
+        self.policy_softmax = nn.Sequential(nn.Linear(u_size, attention_res*attention_res),
                                     nn.Softmax(dim=-1))
 
     def forward(self, 
@@ -365,12 +377,17 @@ class RLAgent(nn.Module):
         i_image = i_image.view((i_image.size(0), -1))  # Flatten the feature vector
         pre_linblock = torch.hstack((i_image, feature_vec))
         g = torch.sigmoid(self.lin_block(pre_linblock))  # Compute policy function
-        attention = self.policy(g)  # Attention of shape B x hw
-        attention = attention.view((attention.size(0), self.attn_res, self.attn_res, 1))  # B x h x w x 1
-        attention = attention.repeat(1, 1, 1, self.attn_chn)  # Repeat attention for all channels
+        normal_cls = torch.distributions.normal.Normal(g, 1)
+        attention = normal_cls.sample()
+        log_prob = normal_cls.log_prob(attention)
+        # # One way of using policy
+        # attention = self.policy_softmax(g)  # Attention of shape B x hw
+        attention = attention.view((attention.size(0), 1, self.attn_res, self.attn_res))  # B x h x w x 1
+        attention = attention.repeat(1, self.attn_chn, 1, 1)  # Repeat attention for all channels
+        return attention, log_prob
 
 if __name__=="__main__":
-    agent = RLAgent(image_res=128, attention_res=8, attention_channels=2)
+    agent = RLAgent(image_res=128, attention_res=16, attention_channels=5)
     image = torch.rand((2, 3, 128, 128))
     feature_prev = torch.rand((2, 512))
     agent(image, feature_prev)

@@ -1,7 +1,7 @@
 import torch
 import torchvision
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 
 import model
@@ -18,14 +18,27 @@ class Trainer:
         use_pretrained = config["use_pretrained"]
         backbone_dir = config["backbone_dir"]
         self.device = config["device"]
+        self.lr = config["learning_rate"]
+        self.T = config["T"]
+        self.epoch = config["epoch"]
+        self.image_res = config["image_res"]
+        self.attention_layer = config["attention_layer"]  # Decide after which layer to apply attention
+        self.alpha = config["alpha"]  # Adjust the weight of validation set loss for reward
 
         if use_pretrained: self.backbone = model.resnet18(True, load_path=backbone_dir, num_classes = self.num_classes)
         else: self.backbone = model.resnet18(False, num_classes = self.num_classes)
         self.backbone = self.backbone.to(self.device)
 
+        test_img = torch.randn((self.batch_size, 3, self.image_res, self.image_res)).to(self.device)
+        self.embed_feature_res = self.backbone.fc.in_features
+        self.attention_map_size = self.backbone(test_img, out_layer=self.attention_layer).size()
         self.train_set = torchvision.datasets.CIFAR10("CIFAR10", True, transform=transform, download=True)
+        # Method requires validation set. Split train by 40k to 10k
+        self.train_set, self.val_set = random_split(self.train_set, [40000, 10000])
         self.test_set = torchvision.datasets.CIFAR10("CIFAR10", False, transform=transform, download=True) 
+        
         self.train_loader = DataLoader(self.train_set, batch_size=self.batch_size)
+        self.val_loader = DataLoader(self.val_set, batch_size=self.batch_size)
         self.test_loader = DataLoader(self.test_set, batch_size=self.batch_size)
     
     def set_parameter_requires_grad(self, model, feature_extracting): 
@@ -33,25 +46,55 @@ class Trainer:
             for param in model.parameters():
                 param.requires_grad = False
 
+    def train(self):
+        
+        self.agent = model.RLAgent(self.image_res, 
+                                embed_feature_res = self.num_classes,
+                                attention_res = self.attention_map_size[2], 
+                                attention_channels = self.attention_map_size[1]).to(self.device)
+
+        optim_bakcbone = torch.optim.Adam(self.backbone.parameters())
+        optim_agent = torch.optim.Adam(self.agent.parameters())
+        criterion = nn.CrossEntropyLoss()
+
+        self.backbone.train()
+        self.agent.train()
+        for epoch in range(self.epoch):
+            for inputs, labels in self.train_loader:
+                optim_agent.zero_grad()
+                optim_bakcbone.zero_grad()
+                inputs = inputs.to(self.device)
+                labels = labels.to(self.device)
+                outputs = self.backbone(inputs)
+                train_loss = criterion(outputs, labels)
+
+                # train rl agent on validation set
+                for val_inps, val_labels in self.val_loader:
+                    val_inps = val_inps.to(self.device)
+                    val_labels = val_labels.to(self.device)
+                    self.backbone(val_inps)  # Updates resnet18.embedded_feature
+                    for _ in range(self.T):
+                        attention_map, log_prob = self.agent(val_inps, self.backbone.embedded_feature)
+                        val_outputs = self.backbone(val_inps, attention_map)
+                        reward = -self.alpha * criterion(val_outputs, val_labels)
+                        rein_loss = (log_prob.mean() * reward)/self.T
+
     def finetune_backbone(self, backbone, feature_extracting=True, first_loop=False):
         # Followed https://pytorch.org/tutorials/beginner/finetuning_torchvision_models_tutorial.html
         
-        if first_loop:
-            self.set_parameter_requires_grad(backbone, feature_extracting=feature_extracting)
-            num_ftrs = backbone.fc.in_features
+        if first_loop:  # Prevent adding new layer at each time.
+            self.set_parameter_requires_grad(backbone, feature_extracting)  # Decide which is going to be trained
+                                                                            # just last channel or whole backbone
+            num_ftrs = backbone.fc.in_features  # Get previous feature layer size
             backbone.fc = nn.Linear(num_ftrs, self.num_classes)
             backbone.fc = backbone.fc.to(self.device)
-            print("Changed last layer.")
-            for name,param in backbone.named_parameters():
-                if param.requires_grad == True:
-                    print("\t",name)
 
         optim = torch.optim.SGD(backbone.parameters(), lr=0.01, momentum=0.9, weight_decay=0.01, nesterov=True)
         # optim = torch.optim.Adam(backbone.parameters(), lr=0.001)
         criterion = nn.CrossEntropyLoss()
         print("Starting training")
+        backbone.train()
         for epoch in range(self.finetune_epoch):
-            backbone.train()
             running_loss = 0.0
 
             for inputs, labels in self.train_loader:
@@ -66,10 +109,11 @@ class Trainer:
             epoch_loss = running_loss / len(self.train_loader.dataset)
             
             print('{} Loss at {}: {:.4f}'.format("Train", epoch, epoch_loss))
-            if epoch % 5 == 0: torch.save(backbone.state_dict(), "models/finetuned_resnet18_{}.pt".format(epoch))
-    
+            if epoch % 5 == 0: torch.save(backbone.state_dict(), "models/finetuned_resnet18_{}.pt".format(epoch))            
+
     def eval(self, test_loader, model):
         correct = 0
+        model.eval()
         for batch, labels in test_loader:
             labels = labels.to(self.device)
             output = model(batch.float().to(self.device))
@@ -91,17 +135,23 @@ if __name__=="__main__":
         "batch_size" : 128,
         "finetune_epoch" : 100,
         "use_pretrained" : True,
-        "backbone_dir" : "models/finetuned_resnet18_5_0.pt",
-        "device" : "cuda"
+        "backbone_dir" : "models/finetuned_resnet18_95.pt",
+        "device" : "cuda",
+        "learning_rate": 1e-6,
+        "epoch": 4000,
+        "T": 5,
+        "image_res": 32,
+        "attention_layer": 2,
+        "alpha": 1e-4
     }
 
     trainer = Trainer(config=config)
-
-    performance = trainer.eval(trainer.test_loader, trainer.backbone)
-    print(performance)
-    first_loop = True
-    while performance < 92.6:
-        print(performance)
-        trainer.finetune_backbone(trainer.backbone, False, first_loop=first_loop)
-        performance = trainer.eval(trainer.test_loader, trainer.backbone)
-        first_loop = False
+    trainer.train()
+    # performance = trainer.eval(trainer.test_loader, trainer.backbone)
+    # print(performance)
+    # first_loop = True
+    # while performance < 92.6:
+    #     print(performance)
+    #     trainer.finetune_backbone(trainer.backbone, False, first_loop=first_loop)
+    #     performance = trainer.eval(trainer.test_loader, trainer.backbone)
+    #     first_loop = False
