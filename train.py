@@ -49,17 +49,19 @@ class Trainer:
     def train(self):
         
         self.agent = model.RLAgent(self.image_res, 
-                                embed_feature_res = self.num_classes,
+                                embed_feature_res = self.embed_feature_res,
                                 attention_res = self.attention_map_size[2], 
                                 attention_channels = self.attention_map_size[1]).to(self.device)
 
-        optim_bakcbone = torch.optim.Adam(self.backbone.parameters())
-        optim_agent = torch.optim.Adam(self.agent.parameters())
+        optim_bakcbone = torch.optim.Adam(self.backbone.parameters(), self.lr)
+        optim_agent = torch.optim.Adam(self.agent.parameters(), self.lr)
         criterion = nn.CrossEntropyLoss()
-
+        
         self.backbone.train()
         self.agent.train()
         for epoch in range(self.epoch):
+            running_loss_train = 0.0
+            running_loss_val = 0.0
             for inputs, labels in self.train_loader:
                 optim_agent.zero_grad()
                 optim_bakcbone.zero_grad()
@@ -67,17 +69,33 @@ class Trainer:
                 labels = labels.to(self.device)
                 outputs = self.backbone(inputs)
                 train_loss = criterion(outputs, labels)
-
+                running_loss_train += train_loss.item() * inputs.size(0)
+                train_loss.backward()
                 # train rl agent on validation set
-                for val_inps, val_labels in self.val_loader:
-                    val_inps = val_inps.to(self.device)
-                    val_labels = val_labels.to(self.device)
-                    self.backbone(val_inps)  # Updates resnet18.embedded_feature
-                    for _ in range(self.T):
-                        attention_map, log_prob = self.agent(val_inps, self.backbone.embedded_feature)
-                        val_outputs = self.backbone(val_inps, attention_map)
-                        reward = -self.alpha * criterion(val_outputs, val_labels)
-                        rein_loss = (log_prob.mean() * reward)/self.T
+                # for val_inps, val_labels in self.val_loader:
+                val_inps, val_labels = next(iter(self.val_loader))
+                val_inps = val_inps.to(self.device)
+                val_labels = val_labels.to(self.device)
+                self.backbone(val_inps)  # Updates resnet18.embedded_feature
+                rein_loss = 0.0
+                for _ in range(self.T):
+                    attention_map, log_prob = self.agent(val_inps, self.backbone.embedded_feature)
+                    val_outputs = self.backbone(val_inps, attention_map)
+                    reward = -self.alpha * criterion(val_outputs, val_labels)
+                    rein_loss += -(log_prob.mean() * reward)/self.T
+                running_loss_val = rein_loss.item() * val_inps.size(0)
+                rein_loss.backward()
+
+                optim_bakcbone.step()
+                optim_agent.step()
+                # print('{} Loss at {}: Train Loss = {:.4f}, Rein Loss = {:.4f}'.format("Train", epoch, train_loss.item(), running_loss_val))
+            epoch_loss = (running_loss_val+running_loss_train) / len(self.train_loader.dataset)
+            running_loss_train = running_loss_train / len(self.train_loader.dataset)
+            running_loss_val = running_loss_val / len(self.train_loader.dataset)
+            print('{} Loss at {}: {:.4f}, Train: {:.4f}, Rein: {:.4f}'.format("Train", epoch, epoch_loss, running_loss_train, running_loss_val))
+            if epoch % 10 == 0: 
+                torch.save(self.backbone.state_dict(), "models/rap_resnet18_{}.pt".format(epoch))            
+                torch.save(self.agent.state_dict(), "models/rap_agent_{}.pt".format(epoch))            
 
     def finetune_backbone(self, backbone, feature_extracting=True, first_loop=False):
         # Followed https://pytorch.org/tutorials/beginner/finetuning_torchvision_models_tutorial.html
@@ -89,8 +107,8 @@ class Trainer:
             backbone.fc = nn.Linear(num_ftrs, self.num_classes)
             backbone.fc = backbone.fc.to(self.device)
 
-        optim = torch.optim.SGD(backbone.parameters(), lr=0.01, momentum=0.9, weight_decay=0.01, nesterov=True)
-        # optim = torch.optim.Adam(backbone.parameters(), lr=0.001)
+        # optim = torch.optim.SGD(backbone.parameters(), lr=self.lr, momentum=0.9, weight_decay=0.01, nesterov=True)
+        optim = torch.optim.Adam(backbone.parameters(), lr=self.lr)
         criterion = nn.CrossEntropyLoss()
         print("Starting training")
         backbone.train()
@@ -114,10 +132,12 @@ class Trainer:
     def eval(self, test_loader, model):
         correct = 0
         model.eval()
+        criterion = nn.CrossEntropyLoss()
         for batch, labels in test_loader:
             labels = labels.to(self.device)
-            output = model(batch.float().to(self.device))
-            predicted_label = torch.argmax(output, dim=1)
+            outputs = model(batch.float().to(self.device))
+            print(criterion(outputs, labels))
+            predicted_label = torch.argmax(outputs, dim=1)
             correct += torch.sum(predicted_label == labels)
 
         return correct/len(test_loader.dataset)
@@ -135,18 +155,21 @@ if __name__=="__main__":
         "batch_size" : 128,
         "finetune_epoch" : 100,
         "use_pretrained" : True,
-        "backbone_dir" : "models/finetuned_resnet18_95.pt",
+        "backbone_dir" : "resnet18.pt",
+        # "backbone_dir" : "models/finetuned_resnet18_30.pt",
         "device" : "cuda",
-        "learning_rate": 1e-6,
+        "learning_rate": 1e-6,  # 1e-6 in the paper
         "epoch": 4000,
         "T": 5,
         "image_res": 32,
         "attention_layer": 2,
-        "alpha": 1e-4
+        "alpha": 1e-4  # 1e-4 paper value
     }
 
     trainer = Trainer(config=config)
     trainer.train()
+    # trainer.finetune_backbone(trainer.backbone, False, True)
+
     # performance = trainer.eval(trainer.test_loader, trainer.backbone)
     # print(performance)
     # first_loop = True

@@ -6,8 +6,7 @@ from typing import Type, Any, Callable, Union, List, Optional
 
 import torch
 import torch.nn as nn
-from torch import Tensor, normal
-
+from torch import Tensor
 from torch.hub import load_state_dict_from_url
 
 __all__ = [
@@ -175,11 +174,11 @@ class ResNet(nn.Module):
             )
         self.groups = groups
         self.base_width = width_per_group
-        self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
+        # self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
         # Changed for CIFAR10
         # kernel_size 7 -> 3, stride 2 -> 1, padding 3->1
         # Taken from https://github.com/huyvnphan/PyTorch_CIFAR10/blob/master/cifar10_models/resnet.py
-        # self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = norm_layer(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -359,8 +358,8 @@ class RLAgent(nn.Module):
         # Create policy to draw attention weights
         self.attn_res = attention_res
         self.attn_chn = attention_channels
-        self.policy_softmax = nn.Sequential(nn.Linear(u_size, attention_res*attention_res),
-                                    nn.Softmax(dim=-1))
+        # self.policy_softmax = nn.Sequential(nn.Linear(u_size, attention_res*attention_res),
+        #                             nn.Softmax(dim=-1))
 
     def forward(self, 
                 image: Tensor,
