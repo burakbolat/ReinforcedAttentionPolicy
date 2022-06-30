@@ -8,30 +8,45 @@ import model
 
 class Trainer:
     def __init__(self, config):
-        self.num_classes = config["num_classes"]
+        self.num_classes = config["num_classes"]  # Number of classificated classes. Set according to dataset
         self.transform = config["transform"]
         # self.train_set = config["train_set_dir"]
         # self.test_set = config["test_set_dir"]
         self.batch_size = config["batch_size"]
-        self.finetune_epoch = config["finetune_epoch"]
+        self.finetune_epoch = config["finetune_epoch"]  # Set in case of finetuning for backbone
 
-        use_pretrained = config["use_pretrained"]
-        backbone_dir = config["backbone_dir"]
+        use_pretrained = config["use_pretrained"]  # Decide to use pretrained, if so, set backbone_dir
+        backbone_dir = config["backbone_dir"]  
         self.device = config["device"]
         self.lr = config["learning_rate"]
-        self.T = config["T"]
-        self.epoch = config["epoch"]
-        self.image_res = config["image_res"]
+        self.T = config["T"]  # Number of reinforce steps for one pass of batch
+        self.epoch = config["epoch"]  # Training epoch for RAP
+        self.image_res = config["image_res"]  # Input image resolution
         self.attention_layer = config["attention_layer"]  # Decide after which layer to apply attention
         self.alpha = config["alpha"]  # Adjust the weight of validation set loss for reward
+        self.model_save = config["model_save"]  # Model saving frequency
+        agent_dir = config["agent_dir"]  # Directory of trained RL agent
 
-        if use_pretrained: self.backbone = model.resnet18(True, load_path=backbone_dir, num_classes = self.num_classes)
-        else: self.backbone = model.resnet18(False, num_classes = self.num_classes)
+        # Create backbone
+        if use_pretrained: self.backbone = model.resnet18(True, load_path=backbone_dir, num_classes = self.num_classes, attention_layer = self.attention_layer)
+        else: self.backbone = model.resnet18(False, num_classes = self.num_classes, attention_layer = self.attention_layer)
         self.backbone = self.backbone.to(self.device)
 
+        # Get attention sizes to create RL agent
         test_img = torch.randn((self.batch_size, 3, self.image_res, self.image_res)).to(self.device)
         self.embed_feature_res = self.backbone.fc.in_features
         self.attention_map_size = self.backbone(test_img, out_layer=self.attention_layer).size()
+        
+        # Create RL agent
+        self.agent = model.RLAgent(self.image_res, 
+                                embed_feature_res = self.embed_feature_res,
+                                attention_res = self.attention_map_size[2], 
+                                attention_channels = self.attention_map_size[1]).to(self.device)
+
+        # Load if pretrained RL agent exists
+        if agent_dir != "": self.agent.load_state_dict(torch.load(agent_dir))
+            
+        # Load sets and create dataloader
         self.train_set = torchvision.datasets.CIFAR10("CIFAR10", True, transform=transform, download=True)
         # Method requires validation set. Split train by 40k to 10k
         self.train_set, self.val_set = random_split(self.train_set, [40000, 10000])
@@ -42,21 +57,23 @@ class Trainer:
         self.test_loader = DataLoader(self.test_set, batch_size=self.batch_size)
     
     def set_parameter_requires_grad(self, model, feature_extracting): 
-        if feature_extracting:
-            for param in model.parameters():
-                param.requires_grad = False
+        """This function freezes the model if mode is feature_extracting. Taken from PyTorch"""
+        req_grad = True
+        if feature_extracting: req_grad = False
+
+        for param in model.parameters():
+            param.requires_grad = req_grad
 
     def train(self):
-        
-        self.agent = model.RLAgent(self.image_res, 
-                                embed_feature_res = self.embed_feature_res,
-                                attention_res = self.attention_map_size[2], 
-                                attention_channels = self.attention_map_size[1]).to(self.device)
+        """Train the RL and Backbone for supervised classification"""
+        optim_agent = torch.optim.Adam(self.backbone.parameters(), self.lr)
+        freeze_backbone = True
+        if freeze_backbone: self.set_parameter_requires_grad(self.backbone, True)  # Freeze backbone
+        if not freeze_backbone: optim_bakcbone = torch.optim.Adam(self.agent.parameters(), self.lr)
 
-        optim_bakcbone = torch.optim.Adam(self.backbone.parameters(), self.lr)
-        optim_agent = torch.optim.Adam(self.agent.parameters(), self.lr)
         criterion = nn.CrossEntropyLoss()
-        
+        print(self.eval(self.test_loader, self.backbone, self.agent))
+
         self.backbone.train()
         self.agent.train()
         for epoch in range(self.epoch):
@@ -64,13 +81,14 @@ class Trainer:
             running_loss_val = 0.0
             for inputs, labels in self.train_loader:
                 optim_agent.zero_grad()
-                optim_bakcbone.zero_grad()
+                if not freeze_backbone: optim_bakcbone.zero_grad()
                 inputs = inputs.to(self.device)
                 labels = labels.to(self.device)
                 outputs = self.backbone(inputs)
-                train_loss = criterion(outputs, labels)
-                running_loss_train += train_loss.item() * inputs.size(0)
-                train_loss.backward()
+                if not freeze_backbone:
+                    train_loss = criterion(outputs, labels)
+                    running_loss_train += train_loss.item() * inputs.size(0)
+                    train_loss.backward()
                 # train rl agent on validation set
                 # for val_inps, val_labels in self.val_loader:
                 val_inps, val_labels = next(iter(self.val_loader))
@@ -80,20 +98,21 @@ class Trainer:
                 rein_loss = 0.0
                 for _ in range(self.T):
                     attention_map, log_prob = self.agent(val_inps, self.backbone.embedded_feature)
-                    val_outputs = self.backbone(val_inps, attention_map)
+                    val_outputs = self.backbone(val_inps, attention_map)  # backbone embed features are updated
                     reward = -self.alpha * criterion(val_outputs, val_labels)
-                    rein_loss += -(log_prob.mean() * reward)/self.T
+                    rein_loss += (log_prob.mean() * reward)/self.T
                 running_loss_val = rein_loss.item() * val_inps.size(0)
                 rein_loss.backward()
 
-                optim_bakcbone.step()
+                if not freeze_backbone: optim_bakcbone.step()
                 optim_agent.step()
-                # print('{} Loss at {}: Train Loss = {:.4f}, Rein Loss = {:.4f}'.format("Train", epoch, train_loss.item(), running_loss_val))
+                # Change according to freeze_backbone # print('{} Loss at {}: Train Loss = {:.4f}, Rein Loss = {:.4f}'.format("Train", epoch, train_loss.item(), running_loss_val))
             epoch_loss = (running_loss_val+running_loss_train) / len(self.train_loader.dataset)
             running_loss_train = running_loss_train / len(self.train_loader.dataset)
             running_loss_val = running_loss_val / len(self.train_loader.dataset)
-            print('{} Loss at {}: {:.4f}, Train: {:.4f}, Rein: {:.4f}'.format("Train", epoch, epoch_loss, running_loss_train, running_loss_val))
-            if epoch % 10 == 0: 
+            print('{} Loss at {}: {:.6f}, Train: {:.4f}, Rein: {:.6f}'.format("Train", epoch, epoch_loss, running_loss_train, running_loss_val))
+            print(self.eval(self.test_loader, self.backbone, self.agent))
+            if epoch % self.model_save == 0:
                 torch.save(self.backbone.state_dict(), "models/rap_resnet18_{}.pt".format(epoch))            
                 torch.save(self.agent.state_dict(), "models/rap_agent_{}.pt".format(epoch))            
 
@@ -127,16 +146,22 @@ class Trainer:
             epoch_loss = running_loss / len(self.train_loader.dataset)
             
             print('{} Loss at {}: {:.4f}'.format("Train", epoch, epoch_loss))
-            if epoch % 5 == 0: torch.save(backbone.state_dict(), "models/finetuned_resnet18_{}.pt".format(epoch))            
+            if epoch % self.model_save == 0: torch.save(backbone.state_dict(), "models/finetuned_resnet18_{}.pt".format(epoch))            
 
-    def eval(self, test_loader, model):
+    def eval(self, test_loader, backbone, agent=None):
         correct = 0
-        model.eval()
+        backbone.eval()
+        if not agent is None: agent.eval()
+
         criterion = nn.CrossEntropyLoss()
-        for batch, labels in test_loader:
+        for inputs, labels in test_loader:
             labels = labels.to(self.device)
-            outputs = model(batch.float().to(self.device))
-            print(criterion(outputs, labels))
+            inputs = inputs.float().to(self.device)
+            outputs = backbone(inputs)
+            if agent:
+                attention_map, _ = agent(inputs, backbone.embedded_feature)
+                outputs = backbone(inputs, attention_map)
+            # print(criterion(outputs, labels))
             predicted_label = torch.argmax(outputs, dim=1)
             correct += torch.sum(predicted_label == labels)
 
@@ -144,7 +169,10 @@ class Trainer:
         
 if __name__=="__main__":
     # For torch pretrained models mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+    image_res = 32
     transform = transforms.Compose([transforms.PILToTensor(),
+                                    transforms.RandomHorizontalFlip(),
+                                    transforms.RandomCrop(image_res),
                                     transforms.ConvertImageDtype(torch.float),
                                     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
                                     ])
@@ -155,23 +183,26 @@ if __name__=="__main__":
         "batch_size" : 128,
         "finetune_epoch" : 100,
         "use_pretrained" : True,
+        "agent_dir": "",
         "backbone_dir" : "resnet18.pt",
         # "backbone_dir" : "models/finetuned_resnet18_30.pt",
         "device" : "cuda",
         "learning_rate": 1e-6,  # 1e-6 in the paper
         "epoch": 4000,
         "T": 5,
-        "image_res": 32,
-        "attention_layer": 2,
-        "alpha": 1e-4  # 1e-4 paper value
+        "image_res": image_res,
+        "attention_layer": 3,
+        "alpha": 1e-4,  # 1e-4 paper value
+        "model_save": 10
     }
 
     trainer = Trainer(config=config)
     trainer.train()
     # trainer.finetune_backbone(trainer.backbone, False, True)
 
-    # performance = trainer.eval(trainer.test_loader, trainer.backbone)
+    # performance = trainer.eval(trainer.test_loader, trainer.backbone, None)
     # print(performance)
+    
     # first_loop = True
     # while performance < 92.6:
     #     print(performance)

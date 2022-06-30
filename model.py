@@ -265,16 +265,15 @@ class ResNet(nn.Module):
         # x = self.layer4(x)
         for layer_ind in range(len(self.layers)):
             x = self.layers[layer_ind](x)
-            if self.attention_layer >= 0 and layer_ind == self.attention_layer:
+            if (not attention_map is None) and self.attention_layer >= 0 and self.attention_layer-1 == layer_ind:
                 x = attention_map * x
-            if out_layer != -1 and out_layer-1==layer_ind:  # out_layer-1 as indexing starts from 0, unlike layers: layer1 ...
-                return x
+            if out_layer != -1 and out_layer-1 == layer_ind:  # out_layer-1 as indexing starts from 0, unlike layers: layer1 ...
+                return x  # Used at initialization to get attention map size
 
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
         self.embedded_feature = x
         x = self.fc(x)
-
         return x
 
     def forward(self, x: Tensor, attention_map: Tensor=None, out_layer: int=-1) -> Tensor:
@@ -301,7 +300,7 @@ def _resnet(
     return model
 
 
-def resnet18(pretrained: bool = False, progress: bool = True, load_path: str = "", **kwargs: Any) -> ResNet:
+def resnet18(pretrained: bool = False, progress: bool = True, load_path: str = "", attention_layer: int = -1, **kwargs: Any) -> ResNet:
     r"""ResNet-18 model from
     `"Deep Residual Learning for Image Recognition" <https://arxiv.org/pdf/1512.03385.pdf>`_.
 
@@ -309,7 +308,7 @@ def resnet18(pretrained: bool = False, progress: bool = True, load_path: str = "
         pretrained (bool): If True, returns a model pre-trained on ImageNet
         progress (bool): If True, displays a progress bar of the download to stderr
     """
-    return _resnet("resnet18", BasicBlock, [2, 2, 2, 2], pretrained, progress, load_path, attention_layer=-1, **kwargs)
+    return _resnet("resnet18", BasicBlock, [2, 2, 2, 2], pretrained, progress, load_path, attention_layer, **kwargs)
 
 
 class RLAgent(nn.Module):
