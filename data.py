@@ -1,9 +1,10 @@
 import os
 import copy
+import torch
 from torch.utils.data import Dataset
 from torchvision.io import read_image
 
-class MiniImageNetDataset(Dataset):
+class MiniImageNetDatasetSampler():
     """Create Dataset.
     Dataset size is small. Thus, directly loaded to the memory.
     Unlike, most of the time, the data path is loaded first, then, image is opened at the runtime.
@@ -26,17 +27,11 @@ class MiniImageNetDataset(Dataset):
                         if not read_all and ind+1 == 4:
                             break
                 self.data_dict[class_ind] = copy.deepcopy(img_arr)
+        assert self.data_dict != {}, "Data Dict is empty!"
 
-        self.class_num = len(self.data_dict)
-        self.img_num = len(self.data_dict[0])
-
-    def __len__(self):
-        return self.class_num * self.img_num 
-
-    def __getitem__(self, index):
-        class_ind = int(index / self.img_num)
-        instance_ind = index % self.img_num
-        return self.data_dict[class_ind][instance_ind]
+    def random_subset(self, n_classes):
+        random_classes = torch.randint(0, 1)
+        pass
 
 if __name__=="__main__":
-    minSet = MiniImageNetDataset("images/train", read_all=False)
+    minSet = MiniImageNetDatasetSampler("images/train", read_all=False)
