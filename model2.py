@@ -5,12 +5,13 @@ from torch import Tensor
 class ConvBlock(nn.Module):
     '''
     Conv Block Architecture used in 
-    Matching Networks for One Shot Learning and
+    Matching Networks for One Shot Learning
     Prototypical Networks for Few-shot Learning
     '''
     def __init__(self,
                  inplanes: int,
-                 planes: int = 64) -> None:
+                 planes: int = 64,
+                 pooling: bool = True) -> None:
         super().__init__()
         ## in Matching Nets paper the authors says that
         ## when 4 of these blocks used with and 28x28 rgb image
@@ -20,13 +21,17 @@ class ConvBlock(nn.Module):
         self.conv = nn.Conv2d(inplanes, planes, kernel_size=3, padding=1)
         self.bn = nn.BatchNorm2d(planes)
         self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(2, 2)
+        if pooling:
+            self.maxpool = nn.MaxPool2d(2, 2)
+        else:
+            self.maxpool = None
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.conv(x)
         x = self.bn(x)
         x = self.relu(x)
-        x = self.maxpool(x)
+        if not self.maxpool is None:
+            x = self.maxpool(x)
         return x
 
 class Conv4(nn.Module):
@@ -42,17 +47,21 @@ class Conv4(nn.Module):
         x = self.cb2(x)
         x = self.cb3(x)
         x = self.cb4(x)
-        return x
+        return torch.flatten(x, 1)
 
 class Conv6(nn.Module):
+    '''
+    Backbone network with 6 convolutional blocks from
+    A CLOSER LOOK AT FEW-SHOT CLASSIFICATION
+    '''
     def __init__(self, inplanes: int = 3) -> None:
         super().__init__()
         self.cb1 = ConvBlock(inplanes, 64)
         self.cb2 = ConvBlock(64, 64)
         self.cb3 = ConvBlock(64, 64)
         self.cb4 = ConvBlock(64, 64)
-        self.cb5 = ConvBlock(64, 64)
-        self.cb6 = ConvBlock(64, 64)
+        self.cb5 = ConvBlock(64, 64, pooling=False)
+        self.cb6 = ConvBlock(64, 64, pooling=False)
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.cb1(x)
@@ -61,7 +70,7 @@ class Conv6(nn.Module):
         x = self.cb4(x)
         x = self.cb5(x)
         x = self.cb6(x)
-        return x
+        return torch.flatten(x, 1)
 
 
 if __name__ == "__main__":
