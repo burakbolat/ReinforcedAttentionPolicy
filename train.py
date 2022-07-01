@@ -1,3 +1,4 @@
+from turtle import back
 import torch
 import torchvision
 import torch.nn as nn
@@ -76,6 +77,7 @@ class Trainer:
 
         self.backbone.train()
         self.agent.train()
+        prev_eval = 0.0
         for epoch in range(self.epoch):
             running_loss_train = 0.0
             running_loss_val = 0.0
@@ -111,11 +113,15 @@ class Trainer:
             running_loss_train = running_loss_train / len(self.train_loader.dataset)
             running_loss_val = running_loss_val / len(self.train_loader.dataset)
             print('{} Loss at {}: {:.6f}, Train: {:.4f}, Rein: {:.6f}'.format("Train", epoch, epoch_loss, running_loss_train, running_loss_val))
-            print(self.eval(self.test_loader, self.backbone, self.agent))
-            if epoch % self.model_save == 0:
-                torch.save(self.backbone.state_dict(), "models/rap_resnet18_{}.pt".format(epoch))            
-                torch.save(self.agent.state_dict(), "models/rap_agent_{}.pt".format(epoch))            
+            curr_eval = self.eval(self.val_loader, self.backbone, self.agent)
+            print(curr_eval)
+            print(self.eval(self.train_loader, self.backbone, self.agent))
+            if curr_eval > prev_eval:
+                torch.save(self.backbone.state_dict(), "models/new_rap_resnet18_{}.pt".format(epoch))            
+                torch.save(self.agent.state_dict(), "models/new_rap_agent_{}.pt".format(epoch)) 
+                prev_eval = curr_eval
 
+                
     def finetune_backbone(self, backbone, feature_extracting=True, first_loop=False):
         # Followed https://pytorch.org/tutorials/beginner/finetuning_torchvision_models_tutorial.html
         
@@ -123,14 +129,15 @@ class Trainer:
             self.set_parameter_requires_grad(backbone, feature_extracting)  # Decide which is going to be trained
                                                                             # just last channel or whole backbone
             num_ftrs = backbone.fc.in_features  # Get previous feature layer size
-            backbone.fc = nn.Linear(num_ftrs, self.num_classes)
+            backbone.fc = nn.Linear(num_ftrs, 10)
             backbone.fc = backbone.fc.to(self.device)
 
         # optim = torch.optim.SGD(backbone.parameters(), lr=self.lr, momentum=0.9, weight_decay=0.01, nesterov=True)
-        optim = torch.optim.Adam(backbone.parameters(), lr=self.lr)
+        optim = torch.optim.Adam(backbone.parameters(), lr=self.lr, betas=[0.5, 0.99])
         criterion = nn.CrossEntropyLoss()
         print("Starting training")
         backbone.train()
+        prev_eval = 0.0
         for epoch in range(self.finetune_epoch):
             running_loss = 0.0
 
@@ -146,7 +153,13 @@ class Trainer:
             epoch_loss = running_loss / len(self.train_loader.dataset)
             
             print('{} Loss at {}: {:.4f}'.format("Train", epoch, epoch_loss))
-            if epoch % self.model_save == 0: torch.save(backbone.state_dict(), "models/finetuned_resnet18_{}.pt".format(epoch))            
+            curr_eval = self.eval(self.val_loader, backbone, None)
+            train_eval = self.eval(self.train_loader, backbone, None)
+            print(curr_eval, train_eval)
+            if curr_eval > prev_eval:
+                torch.save(backbone.state_dict(), "models/finetuned_resnet18.pt".format(epoch))
+                prev_eval = curr_eval
+            # if epoch % self.model_save == 0: torch.save(backbone.state_dict(), "models/finetuned_resnet18_{}.pt".format(epoch))            
 
     def eval(self, test_loader, backbone, agent=None):
         correct = 0
@@ -164,7 +177,6 @@ class Trainer:
             # print(criterion(outputs, labels))
             predicted_label = torch.argmax(outputs, dim=1)
             correct += torch.sum(predicted_label == labels)
-
         return correct/len(test_loader.dataset)
         
 if __name__=="__main__":
@@ -184,15 +196,16 @@ if __name__=="__main__":
         "finetune_epoch" : 100,
         "use_pretrained" : True,
         "agent_dir": "",
-        "backbone_dir" : "resnet18.pt",
-        # "backbone_dir" : "models/finetuned_resnet18_30.pt",
+        # "backbone_dir" : "models/resnet18.pt",
+        "backbone_dir" : "models/finetuned_resnet18.pt",
+        # "backbone_dir" : "models/resnet18-f37072fd.pth",
         "device" : "cuda",
         "learning_rate": 1e-6,  # 1e-6 in the paper
         "epoch": 4000,
         "T": 5,
         "image_res": image_res,
         "attention_layer": 3,
-        "alpha": 1e-4,  # 1e-4 paper value
+        "alpha": 1e-3,  # 1e-4 paper value
         "model_save": 10
     }
 
