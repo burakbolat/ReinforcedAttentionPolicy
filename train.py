@@ -67,14 +67,14 @@ class Trainer:
 
     def train(self):
         """Train the RL and Backbone for supervised classification"""
-        optim_agent = torch.optim.Adam(self.backbone.parameters(), self.lr)
+        optim_agent = torch.optim.Adam(self.backbone.parameters(), self.lr, betas=[0.5, 0.99])
         freeze_backbone = True
         if freeze_backbone: self.set_parameter_requires_grad(self.backbone, True)  # Freeze backbone
-        if not freeze_backbone: optim_bakcbone = torch.optim.Adam(self.agent.parameters(), self.lr)
+        if not freeze_backbone: optim_bakcbone = torch.optim.Adam(self.agent.parameters(), self.lr, betas=[0.5, 0.99])
 
         criterion = nn.CrossEntropyLoss()
-        print(self.eval(self.test_loader, self.backbone, self.agent))
-
+        curr_eval = self.eval(self.val_loader, self.backbone, self.agent)
+        print(curr_eval)
         self.backbone.train()
         self.agent.train()
         prev_eval = 0.0
@@ -93,7 +93,7 @@ class Trainer:
                     train_loss.backward()
                 # train rl agent on validation set
                 # for val_inps, val_labels in self.val_loader:
-                val_inps, val_labels = next(iter(self.val_loader))
+                val_inps, val_labels = next(iter(self.train_loader))
                 val_inps = val_inps.to(self.device)
                 val_labels = val_labels.to(self.device)
                 self.backbone(val_inps)  # Updates resnet18.embedded_feature
@@ -102,23 +102,22 @@ class Trainer:
                     attention_map, log_prob = self.agent(val_inps, self.backbone.embedded_feature)
                     val_outputs = self.backbone(val_inps, attention_map)  # backbone embed features are updated
                     reward = -self.alpha * criterion(val_outputs, val_labels)
-                    rein_loss += (log_prob.mean() * reward)/self.T
-                running_loss_val = rein_loss.item() * val_inps.size(0)
+                    rein_loss += -(log_prob.mean() * reward)/self.T
+                running_loss_val += rein_loss.item() * val_inps.size(0)
                 rein_loss.backward()
 
                 if not freeze_backbone: optim_bakcbone.step()
                 optim_agent.step()
                 # Change according to freeze_backbone # print('{} Loss at {}: Train Loss = {:.4f}, Rein Loss = {:.4f}'.format("Train", epoch, train_loss.item(), running_loss_val))
-            epoch_loss = (running_loss_val+running_loss_train) / len(self.train_loader.dataset)
             running_loss_train = running_loss_train / len(self.train_loader.dataset)
             running_loss_val = running_loss_val / len(self.train_loader.dataset)
+            epoch_loss = running_loss_val+running_loss_train
             print('{} Loss at {}: {:.6f}, Train: {:.4f}, Rein: {:.6f}'.format("Train", epoch, epoch_loss, running_loss_train, running_loss_val))
             curr_eval = self.eval(self.val_loader, self.backbone, self.agent)
             print(curr_eval)
-            print(self.eval(self.train_loader, self.backbone, self.agent))
             if curr_eval > prev_eval:
-                torch.save(self.backbone.state_dict(), "models/new_rap_resnet18_{}.pt".format(epoch))            
-                torch.save(self.agent.state_dict(), "models/new_rap_agent_{}.pt".format(epoch)) 
+                torch.save(self.backbone.state_dict(), "models/new_rap_resnet18_freezed.pt".format(epoch))            
+                torch.save(self.agent.state_dict(), "models/new_rap_agent_freezed.pt".format(epoch)) 
                 prev_eval = curr_eval
 
                 
@@ -204,8 +203,8 @@ if __name__=="__main__":
         "epoch": 4000,
         "T": 5,
         "image_res": image_res,
-        "attention_layer": 3,
-        "alpha": 1e-3,  # 1e-4 paper value
+        "attention_layer": 2,
+        "alpha": 1e-4,  # 1e-4 paper value
         "model_save": 10
     }
 
