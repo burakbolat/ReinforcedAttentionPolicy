@@ -317,7 +317,8 @@ class RLAgent(nn.Module):
 
     def __init__(self, 
                 image_res: int = 256,
-                channels: List[int] = [128, 64],
+                channels: List[int] = [64, 64, 64],
+                maxpool_size = 2,
                 embed_feature_res: int = 512,
                 attention_res: int = 512,
                 attention_channels: int = 4,
@@ -333,26 +334,21 @@ class RLAgent(nn.Module):
             layer = nn.Sequential(nn.Conv2d(in_channels, channels[i], kernel_size=3),
                                 nn.BatchNorm2d(channels[i]),
                                 nn.ReLU(inplace=True),
-                                nn.MaxPool2d(kernel_size = 3))
+                                nn.MaxPool2d(kernel_size = maxpool_size))
             layers.append(layer)
             self.conv_out_size = int((self.conv_out_size - 2))  # pad = 0, kernel = 3, stride = 1, dilation = 1
-            self.conv_out_size = int((self.conv_out_size - 3)/3 + 1)  # Max pooling output
+            self.conv_out_size = int((self.conv_out_size - maxpool_size)/maxpool_size + 1)  # Max pooling output
             in_channels = channels[i]
 
         self.conv_block = nn.Sequential(*layers)
 
         # Create Linear Block (see Fig. 3)
         # Sigmoid is accounted at forward pass
-        lin_input = channels[-1]*(self.conv_out_size*self.conv_out_size) + embed_feature_res
-        layers = []
-        for i in range(lin_block_depth):
-            if i == lin_block_depth-1: 
-                layers.append(nn.Sequential(nn.Linear(lin_input, attention_res*attention_res),
-                                        nn.ReLU()))
-            else:
-                layers.append(nn.Sequential(nn.Linear(lin_input, lin_input),
-                                        nn.ReLU()))
-        self.lin_block = nn.Sequential(*layers)
+        lin_input_size = channels[-1] + embed_feature_res
+
+
+        self.lin_block = nn.Sequential(nn.Linear(lin_input_size, attention_res*attention_res),
+                                        nn.ReLU())
 
         # Create policy to draw attention weights
         self.attn_res = attention_res
@@ -362,7 +358,8 @@ class RLAgent(nn.Module):
 
     def forward(self, 
                 image: Tensor,
-                feature_vec: Tensor = None):
+                feature_vec: Tensor = None,
+                test: bool = False):
         """ One step of RL agent.
         Args:
             image: To extract low level informations
@@ -370,16 +367,19 @@ class RLAgent(nn.Module):
         Returns:
             action: Attention maps
         """
-        
         i_image = self.conv_block(image)  # Compute image feature vector
-        i_image = i_image.view((i_image.size(0), -1))  # Flatten the feature vector
-        pre_linblock = torch.hstack((i_image, feature_vec))
+        i_image = torch.mean(i_image, dim=(2,3))
+        pre_linblock = torch.cat([i_image, feature_vec], dim=1)
         g = torch.sigmoid(self.lin_block(pre_linblock))  # Compute policy function
         normal_cls = torch.distributions.normal.Normal(g, 1)
-        attention = normal_cls.sample()
-        log_prob = normal_cls.log_prob(attention)
-        # # One way of using policy
-        # attention = self.policy_softmax(g)  # Attention of shape B x hw
+        if not test:
+            attention = normal_cls.sample()
+            log_prob = normal_cls.log_prob(attention)
+        else:
+            attention = g
+            log_prob = normal_cls.log_prob(attention)
+        # One way of using policy
+        # attention = nn.functional.softmax(g, dim=1)  # Attention of shape B x hw
         attention = attention.view((attention.size(0), 1, self.attn_res, self.attn_res))  # B x h x w x 1
         attention = attention.repeat(1, self.attn_chn, 1, 1)  # Repeat attention for all channels
         return attention, log_prob
