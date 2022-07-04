@@ -317,7 +317,7 @@ class RLAgent(nn.Module):
 
     def __init__(self, 
                 image_res: int = 256,
-                channels: List[int] = [128, 64],
+                channels: List[int] = [64, 64],
                 embed_feature_res: int = 512,
                 attention_res: int = 512,
                 attention_channels: int = 4,
@@ -343,7 +343,7 @@ class RLAgent(nn.Module):
 
         # Create Linear Block (see Fig. 3)
         # Sigmoid is accounted at forward pass
-        lin_input = channels[-1]*(self.conv_out_size*self.conv_out_size) + embed_feature_res
+        lin_input = channels[-1] + embed_feature_res
         layers = []
         for i in range(lin_block_depth):
             if i == lin_block_depth-1: 
@@ -372,7 +372,7 @@ class RLAgent(nn.Module):
         """
         
         i_image = self.conv_block(image)  # Compute image feature vector
-        i_image = i_image.view((i_image.size(0), -1))  # Flatten the feature vector
+        i_image = i_image.mean(dim=(2,3))  # Flatten the feature vector
         pre_linblock = torch.hstack((i_image, feature_vec))
         g = torch.sigmoid(self.lin_block(pre_linblock))  # Compute policy function
         normal_cls = torch.distributions.normal.Normal(g, 1)

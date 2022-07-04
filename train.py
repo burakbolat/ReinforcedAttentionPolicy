@@ -61,16 +61,26 @@ class Trainer:
         """This function freezes the model if mode is feature_extracting. Taken from PyTorch"""
         req_grad = True
         if feature_extracting: req_grad = False
-
         for param in model.parameters():
             param.requires_grad = req_grad
 
     def train(self):
         """Train the RL and Backbone for supervised classification"""
-        optim_agent = torch.optim.Adam(self.backbone.parameters(), self.lr, betas=[0.5, 0.99])
-        freeze_backbone = True
-        if freeze_backbone: self.set_parameter_requires_grad(self.backbone, True)  # Freeze backbone
-        if not freeze_backbone: optim_bakcbone = torch.optim.Adam(self.agent.parameters(), self.lr, betas=[0.5, 0.99])
+        optim_agent = torch.optim.Adam(self.agent.parameters(), self.lr, betas=[0.9, 0.99])
+        freeze_backbone = False
+
+        # No need since optim_backbone is not created if backbone is freezed
+        # However, updating last fc layer is an ablation option.
+        # In case just last fc is updated, update set_parameter_requires_grad according to it.
+        # Follow torch official tutorial.
+        params_to_update = self.backbone.parameters()
+        if freeze_backbone: 
+            self.set_parameter_requires_grad(self.backbone, True)  # Freeze backbone
+            for _,param in self.backbone.named_parameters():
+                params_to_update = []
+                if param.requires_grad == True:
+                    params_to_update.append(param)
+        if not freeze_backbone: optim_bakcbone = torch.optim.Adam(params_to_update, self.lr, betas=[0.9, 0.99])
 
         criterion = nn.CrossEntropyLoss()
         curr_eval = self.eval(self.val_loader, self.backbone, self.agent)
@@ -91,8 +101,7 @@ class Trainer:
                     train_loss = criterion(outputs, labels)
                     running_loss_train += train_loss.item() * inputs.size(0)
                     train_loss.backward()
-                # train rl agent on validation set
-                # for val_inps, val_labels in self.val_loader:
+                # Train rl agent on validation set
                 val_inps, val_labels = next(iter(self.train_loader))
                 val_inps = val_inps.to(self.device)
                 val_labels = val_labels.to(self.device)
@@ -116,8 +125,8 @@ class Trainer:
             curr_eval = self.eval(self.val_loader, self.backbone, self.agent)
             print(curr_eval)
             if curr_eval > prev_eval:
-                torch.save(self.backbone.state_dict(), "models/new_rap_resnet18_freezed.pt".format(epoch))            
-                torch.save(self.agent.state_dict(), "models/new_rap_agent_freezed.pt".format(epoch)) 
+                torch.save(self.backbone.state_dict(), "models/new_rap_resnet18_rein.pt".format(epoch))            
+                torch.save(self.agent.state_dict(), "models/new_rap_agent_rein.pt".format(epoch)) 
                 prev_eval = curr_eval
 
                 
@@ -162,20 +171,21 @@ class Trainer:
 
     def eval(self, test_loader, backbone, agent=None):
         correct = 0
-        backbone.eval()
-        if not agent is None: agent.eval()
+        # backbone.eval()
+        # if not agent is None: agent.eval()
 
         criterion = nn.CrossEntropyLoss()
-        for inputs, labels in test_loader:
-            labels = labels.to(self.device)
-            inputs = inputs.float().to(self.device)
-            outputs = backbone(inputs)
-            if agent:
-                attention_map, _ = agent(inputs, backbone.embedded_feature)
-                outputs = backbone(inputs, attention_map)
-            # print(criterion(outputs, labels))
-            predicted_label = torch.argmax(outputs, dim=1)
-            correct += torch.sum(predicted_label == labels)
+        with torch.no_grad():
+            for inputs, labels in test_loader:
+                labels = labels.to(self.device)
+                inputs = inputs.float().to(self.device)
+                outputs = backbone(inputs)
+                if agent:
+                    attention_map, _ = agent(inputs, backbone.embedded_feature)
+                    outputs = backbone(inputs, attention_map)
+                # print(criterion(outputs, labels))
+                predicted_label = torch.argmax(outputs, dim=1)
+                correct += torch.sum(predicted_label == labels)
         return correct/len(test_loader.dataset)
         
 if __name__=="__main__":
@@ -196,24 +206,25 @@ if __name__=="__main__":
         "use_pretrained" : True,
         "agent_dir": "",
         # "backbone_dir" : "models/resnet18.pt",
-        "backbone_dir" : "models/finetuned_resnet18.pt",
+        "backbone_dir" : "models/new_rap_resnet18_rein.pt",
+        # "backbone_dir" : "models/new_rap_resnet18_freezed.pt",
         # "backbone_dir" : "models/resnet18-f37072fd.pth",
         "device" : "cuda",
         "learning_rate": 1e-6,  # 1e-6 in the paper
         "epoch": 4000,
         "T": 5,
         "image_res": image_res,
-        "attention_layer": 2,
+        "attention_layer": 3,
         "alpha": 1e-4,  # 1e-4 paper value
         "model_save": 10
     }
 
     trainer = Trainer(config=config)
-    trainer.train()
+    # trainer.train()
     # trainer.finetune_backbone(trainer.backbone, False, True)
 
-    # performance = trainer.eval(trainer.test_loader, trainer.backbone, None)
-    # print(performance)
+    performance = trainer.eval(trainer.test_loader, trainer.backbone, None)
+    print(performance)
     
     # first_loop = True
     # while performance < 92.6:
