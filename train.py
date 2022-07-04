@@ -111,7 +111,7 @@ class Trainer:
                     attention_map, log_prob = self.agent(val_inps, self.backbone.embedded_feature)
                     val_outputs = self.backbone(val_inps, attention_map)  # backbone embed features are updated
                     reward = -self.alpha * criterion(val_outputs, val_labels)
-                    rein_loss += -(log_prob.mean() * reward)/self.T
+                    rein_loss += -(log_prob.mean() * reward.detach()) - reward/self.T
                 running_loss_val += rein_loss.item() * val_inps.size(0)
                 rein_loss.backward()
 
@@ -125,8 +125,8 @@ class Trainer:
             curr_eval = self.eval(self.val_loader, self.backbone, self.agent)
             print(curr_eval)
             if curr_eval > prev_eval:
-                torch.save(self.backbone.state_dict(), "models/new_rap_resnet18_rein.pt".format(epoch))            
-                torch.save(self.agent.state_dict(), "models/new_rap_agent_rein.pt".format(epoch)) 
+                torch.save(self.backbone.state_dict(), "models/loss_rap_resnet18_rein.pt".format(epoch))            
+                torch.save(self.agent.state_dict(), "models/loss_rap_agent_rein.pt".format(epoch)) 
                 prev_eval = curr_eval
 
                 
@@ -181,8 +181,9 @@ class Trainer:
                 inputs = inputs.float().to(self.device)
                 outputs = backbone(inputs)
                 if agent:
-                    attention_map, _ = agent(inputs, backbone.embedded_feature)
-                    outputs = backbone(inputs, attention_map)
+                    for _ in range(self.T):
+                        attention_map, _ = agent(inputs, backbone.embedded_feature)
+                        outputs = backbone(inputs, attention_map)
                 # print(criterion(outputs, labels))
                 predicted_label = torch.argmax(outputs, dim=1)
                 correct += torch.sum(predicted_label == labels)
@@ -204,9 +205,9 @@ if __name__=="__main__":
         "batch_size" : 128,
         "finetune_epoch" : 100,
         "use_pretrained" : True,
-        "agent_dir": "",
+        "agent_dir": "models/loss_rap_agent_rein.pt",
         # "backbone_dir" : "models/resnet18.pt",
-        "backbone_dir" : "models/new_rap_resnet18_rein.pt",
+        "backbone_dir" : "models/loss_rap_resnet18_rein.pt",
         # "backbone_dir" : "models/new_rap_resnet18_freezed.pt",
         # "backbone_dir" : "models/resnet18-f37072fd.pth",
         "device" : "cuda",
@@ -215,7 +216,7 @@ if __name__=="__main__":
         "T": 5,
         "image_res": image_res,
         "attention_layer": 3,
-        "alpha": 1e-4,  # 1e-4 paper value
+        "alpha": 1e-1,  # 1e-4 paper value
         "model_save": 10
     }
 
@@ -223,7 +224,7 @@ if __name__=="__main__":
     # trainer.train()
     # trainer.finetune_backbone(trainer.backbone, False, True)
 
-    performance = trainer.eval(trainer.test_loader, trainer.backbone, None)
+    performance = trainer.eval(trainer.test_loader, trainer.backbone, trainer.agent)
     print(performance)
     
     # first_loop = True
