@@ -1,7 +1,7 @@
 import torch
 from torch import Tensor
 from data import MINDatasetSampler
-from model2 import Conv4, Conv6
+from fw_backbone import Conv4, Conv6, resnet10
 from torchvision.transforms import Compose, RandomResizedCrop, RandomHorizontalFlip
 from model import RLAgent
 
@@ -199,7 +199,7 @@ def test_accuracy_attention(num_episodes : int,
 
                     for index, query_set in enumerate(query_set_list):
                         query_set = query_set.to("cuda")
-                        attention, log_prob = rl_agent(query_set, qf_list[0], True)
+                        attention, _ = rl_agent(query_set, qf_list[0], True)
                         query_features = backbone(query_set, attention)
                         qf_list.append(query_features)
                         qf_list.pop(0)
@@ -213,35 +213,39 @@ def test_accuracy_attention(num_episodes : int,
             episode_accuracies.append(accuracy*100/(num_class*num_query))
     return torch.mean(torch.tensor(episode_accuracies))
 
-if __name__ == "__main__":
+def main(with_attention, num_class, num_support, num_query, num_episodes, learning_rate, backbone):
     transforms = Compose([
         RandomResizedCrop(size=(84,84)),
         RandomHorizontalFlip()
     ])
-    num_episodes = 1200
-    learning_rate = 1e-3
-    num_class = 5
-    num_support = 5
-    num_query = 16
-
-    backbone = Conv6(inplanes=3).to("cuda")
-    if False:
+    print("With attention:", with_attention, ", Backbone:", type(backbone).__name__, 
+          ", num_class:", num_class, ", num_support:", num_support, ", num_query:", num_query, ", num_episodes:", num_episodes)
+    backbone = backbone.to("cuda")
+    if not with_attention:
         train_data_sampler = MINDatasetSampler(["images/train", "images/val"], transform=transforms, read_all=True, device="cpu")
         val_data_sampler = MINDatasetSampler(["images/val"], transform=transforms, read_all=True, device="cpu")
         train(num_episodes, learning_rate, backbone, None, train_data_sampler, val_data_sampler, num_class, num_support, num_query, False)
         test_data_sampler = MINDatasetSampler(["images/test"], transform=transforms, read_all=True, device="cuda")
         backbone.load_state_dict(torch.load("fe_best.pt"))
-        print(test_accuracy(600, backbone, test_data_sampler, num_class, num_support, num_query))
+        print(test_accuracy(num_episodes//2, backbone, test_data_sampler, num_class, num_support, num_query))
     else:
-        # train_data_sampler = MINDatasetSampler(["images/train"], transform=transforms, read_all=True, device="cpu")
-        # val_data_sampler = MINDatasetSampler(["images/val"], transform=transforms, read_all=True, device="cpu")
-        test = backbone(torch.randn((1,3,84,84), requires_grad=False, device="cuda"))
-        print(test.size())
-        rl_agent = RLAgent(84, [64, 64, 64], 2, test.size(1), 5, 64).to("cuda")
-        # train(num_episodes, learning_rate, backbone, rl_agent, train_data_sampler, val_data_sampler, num_class, num_support, num_query, True)
+        train_data_sampler = MINDatasetSampler(["images/train"], transform=transforms, read_all=True, device="cpu")
+        val_data_sampler = MINDatasetSampler(["images/val"], transform=transforms, read_all=True, device="cpu")
+        with torch.no_grad():
+            test = backbone(torch.randn((1,3,84,84), requires_grad=False, device="cuda"), 1)
+            rl_agent = RLAgent(84, [64, 64, 64], 2, test.size(1), backbone.size, backbone.channel).to("cuda")
+        train(num_episodes, learning_rate, backbone, rl_agent, train_data_sampler, val_data_sampler, num_class, num_support, num_query, True)
         test_data_sampler = MINDatasetSampler(["images/test"], transform=transforms, read_all=True, device="cuda")
     
         backbone.load_state_dict(torch.load("fe_best.pt"))
         rl_agent.load_state_dict(torch.load("ra_best.pt"))
-        print(test_accuracy_attention(600, backbone, rl_agent, test_data_sampler, num_class, num_support, num_query, 5))
+        print(test_accuracy_attention(num_episodes//2, backbone, rl_agent, test_data_sampler, num_class, num_support, num_query, 5))
 
+if __name__ == "__main__":
+    main(with_attention=True, 
+         num_class=5, 
+         num_support=1, 
+         num_query=16, 
+         num_episodes=1200, 
+         learning_rate=1e-3, 
+         backbone=resnet10(attention_layer=2))
