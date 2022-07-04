@@ -42,11 +42,13 @@ class Conv4(nn.Module):
         self.cb3 = ConvBlock(64, 64)
         self.cb4 = ConvBlock(64, 64)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, a: Tensor = None) -> Tensor:
         x = self.cb1(x)
         x = self.cb2(x)
         x = self.cb3(x)
         x = self.cb4(x)
+        if not a is None:
+            x = a * x 
         return torch.flatten(x, 1)
 
 class Conv6(nn.Module):
@@ -63,11 +65,13 @@ class Conv6(nn.Module):
         self.cb5 = ConvBlock(64, 64, pooling=False)
         self.cb6 = ConvBlock(64, 64, pooling=False)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, a: Tensor = None) -> Tensor:
         x = self.cb1(x)
         x = self.cb2(x)
         x = self.cb3(x)
         x = self.cb4(x)
+        if not a is None:
+            x = a * x 
         x = self.cb5(x)
         x = self.cb6(x)
         return torch.flatten(x, 1)

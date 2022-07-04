@@ -10,22 +10,22 @@ class MINDatasetSampler(object):
     Unlike, most of the time, the data path is loaded first, then, image is opened at the runtime.
     Images from: https://lyy.mpi-inf.mpg.de/mtl/download/
     """
-    def __init__(self, img_dir=None, transform=None, read_all=True, device="cpu"):
-        self.img_dir = img_dir
+    def __init__(self, img_dirs=None, transform=None, read_all=True, device="cpu"):
         self.data_dict = {}
-        for root, dirs, _ in os.walk(img_dir):
-            for class_ind, class_num in enumerate(dirs):
-                class_dir = os.path.join(root, class_num)
-                img_arr = []
-                for _, _, files in os.walk(class_dir):
-                    for ind, file in enumerate(files):
-                        img_path = os.path.join(class_dir, file)
-                        img = read_image(img_path)/255.0
-                        if transform: img = transform(img)
-                        img_arr.append(img.to(device))
-                        if not read_all and ind+1 == 4:
-                            break
-                self.data_dict[class_ind] = torch.stack(img_arr, dim=0)
+        for img_dir in img_dirs:
+            for root, dirs, _ in os.walk(img_dir):
+                for class_ind, class_num in enumerate(dirs):
+                    class_dir = os.path.join(root, class_num)
+                    img_arr = []
+                    for _, _, files in os.walk(class_dir):
+                        for ind, file in enumerate(files):
+                            img_path = os.path.join(class_dir, file)
+                            img = read_image(img_path)/255.0
+                            if transform: img = transform(img)
+                            img_arr.append(img.to(device))
+                            if not read_all and ind+1 == 4:
+                                break
+                    self.data_dict[class_ind] = torch.stack(img_arr, dim=0)
         assert self.data_dict != {}, "Data Dict is empty!"
         self.num_classes = len(self.data_dict)
         self.num_data_in_class = len(self.data_dict[0])
