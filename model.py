@@ -154,6 +154,7 @@ class ResNet(nn.Module):
         replace_stride_with_dilation: Optional[List[bool]] = None,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
         attention_layer: int = -1,
+        few_shot: bool = False
     ) -> None:
         super().__init__()
         if norm_layer is None:
@@ -192,7 +193,10 @@ class ResNet(nn.Module):
         self.layers.append(self.layer3)
         self.layers.append(self.layer4)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(512 * block.expansion, num_classes)
+        if not few_shot:
+            self.fc = nn.Linear(512 * block.expansion, num_classes)
+        else:
+            self.fc = None
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -266,14 +270,17 @@ class ResNet(nn.Module):
         for layer_ind in range(len(self.layers)):
             x = self.layers[layer_ind](x)
             if (not attention_map is None) and self.attention_layer >= 0 and self.attention_layer-1 == layer_ind:
+                self.size = x.size(2)
+                self.channel = x.size(1)
                 x = attention_map * x
             if out_layer != -1 and out_layer-1 == layer_ind:  # out_layer-1 as indexing starts from 0, unlike layers: layer1 ...
                 return x # Used at initialization to get attention map size
 
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
-        self.embedded_feature = x
-        x = self.fc(x)
+        if not self.fc is None:
+            self.embedded_feature = x
+            x = self.fc(x)
 
         return x
 
@@ -289,9 +296,10 @@ def _resnet(
     progress: bool,
     load_path: str,
     attention_layer: int,
+    few_shot: bool = False,
     **kwargs: Any,
 ) -> ResNet:
-    model = ResNet(block, layers, attention_layer=attention_layer, **kwargs)
+    model = ResNet(block, layers, attention_layer=attention_layer, few_shot=few_shot, **kwargs)
     if pretrained and not load_path:
         state_dict = load_state_dict_from_url(model_urls[arch], progress=progress)
         model.load_state_dict(state_dict)

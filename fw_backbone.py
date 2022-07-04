@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torch import Tensor
+from model import _resnet, BasicBlock
 
 class ConvBlock(nn.Module):
     '''
@@ -41,14 +42,16 @@ class Conv4(nn.Module):
         self.cb2 = ConvBlock(64, 64)
         self.cb3 = ConvBlock(64, 64)
         self.cb4 = ConvBlock(64, 64)
+        self.channel = 64
 
     def forward(self, x: Tensor, a: Tensor = None) -> Tensor:
         x = self.cb1(x)
         x = self.cb2(x)
-        x = self.cb3(x)
-        x = self.cb4(x)
+        self.size = x.size(2)
         if not a is None:
             x = a * x 
+        x = self.cb3(x)
+        x = self.cb4(x)
         return torch.flatten(x, 1)
 
 class Conv6(nn.Module):
@@ -64,18 +67,25 @@ class Conv6(nn.Module):
         self.cb4 = ConvBlock(64, 64)
         self.cb5 = ConvBlock(64, 64, pooling=False)
         self.cb6 = ConvBlock(64, 64, pooling=False)
+        self.channel = 64
 
     def forward(self, x: Tensor, a: Tensor = None) -> Tensor:
         x = self.cb1(x)
         x = self.cb2(x)
         x = self.cb3(x)
         x = self.cb4(x)
+        self.size = x.size(2)
         if not a is None:
             x = a * x 
         x = self.cb5(x)
         x = self.cb6(x)
         return torch.flatten(x, 1)
 
+def resnet10(attention_layer: int = -1, few_shot=True, **kwargs):
+    r"""ResNet-10 model from
+    `"A CLOSER LOOK AT FEW-SHOT CLASSIFICATION" <https://arxiv.org/pdf/1904.04232.pdf>`_.
+    """
+    return _resnet("resnet10", BasicBlock, [1, 1, 1, 1], False, False, "", attention_layer, few_shot, **kwargs)
 
 if __name__ == "__main__":
     conv4 = Conv4(3)
